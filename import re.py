@@ -29,7 +29,7 @@ def detecter_buffer_overflow(payload_hex):
             return True
     return False
 
-def generer_expert_cyber(chemin_fichier):
+def generer_analyse(chemin_fichier):
     # Validation
     if not os.path.exists(chemin_fichier):
         print(f"❌ ERREUR FATALE : Le fichier '{chemin_fichier}' est introuvable.")
@@ -282,4 +282,4 @@ def generer_expert_cyber(chemin_fichier):
     webbrowser.open('file://' + chemin_html)
 
 # Lancement
-generer_expert_cyber(r"C:\Users\Irmane\Documents\SAE1.05\DumpFile.txt")
+generer_analyse(r"C:\Users\Irmane\Documents\SAE1.05\DumpFile.txt")
