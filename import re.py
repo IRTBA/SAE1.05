@@ -2,10 +2,10 @@ import re
 import os
 import webbrowser
 import csv
+import markdown
 from collections import Counter
 from datetime import datetime
 
-# --- CONFIGURATION ---
 DANGER_CRITIQUE = "#ef4444" # Rouge
 DANGER_ELEVE = "#f97316"    # Orange
 DANGER_MOYEN = "#eab308"    # Jaune
@@ -21,25 +21,29 @@ def hex_to_ascii(hex_str):
         return ""
 
 def detecter_buffer_overflow(payload_hex):
-    """Détecte les répétitions de caractères typiques des Buffer Overflows (ex: 585858...)."""
+    """Détecte les répétitions de caractères typiques des Buffer Overflows."""
     clean_hex = payload_hex.replace(" ", "").replace("\t", "").replace("\n", "")
     if len(clean_hex) > 100:
-        # On regarde si un motif de 2 caractères se répète plus de 40 fois
         most_common = Counter([clean_hex[i:i+2] for i in range(0, len(clean_hex), 2)]).most_common(1)
         if most_common and most_common[0][1] > 40:
             return True
     return False
 
 def generer_expert_cyber(chemin_fichier):
+    # Validation
     if not os.path.exists(chemin_fichier):
         print(f"❌ ERREUR FATALE : Le fichier '{chemin_fichier}' est introuvable.")
         return
 
+    # Chemins
     dossier_script = os.path.dirname(os.path.abspath(__file__)) if '__file__' in locals() else os.getcwd()
     chemin_csv = os.path.join(dossier_script, "RAPPORT_MENACES.csv")
+    chemin_md = os.path.join(dossier_script, "RAPPORT_SECURITE.md")
     chemin_html = os.path.join(dossier_script, "dashboard_securite.html")
 
-    pattern_ip = re.compile(r'IP ([\w\.-]+) > ([\w\.-]+):.*Flags \[([\w\.]+)\].*length (\d+)')
+    #Analyse de l'heure
+    # On capture l'heure au début : (\d{2}:\d{2}:\d{2}\.\d+)
+    pattern_ip = re.compile(r'(\d{2}:\d{2}:\d{2}\.\d+) IP ([\w\.-]+) > ([\w\.-]+):.*Flags \[([\w\.]+)\].*length (\d+)')
     pattern_hex = re.compile(r'^\t0x[0-9a-f]{4}:  ((?:[0-9a-f]{4}\s?)+)', re.MULTILINE)
     
     alertes = []
@@ -54,7 +58,7 @@ def generer_expert_cyber(chemin_fichier):
     for p in paquets:
         header = pattern_ip.search(p)
         if header:
-            src, dst, flags, length = header.groups()
+            timestamp, src, dst, flags, length = header.groups()
             
             hex_raw = "".join(pattern_hex.findall(p))
             payload_ascii = hex_to_ascii(hex_raw).lower()
@@ -62,13 +66,12 @@ def generer_expert_cyber(chemin_fichier):
             menace = None
             gravite = "INFO"
             couleur = DANGER_INFO
-
             
+            # detections
             if detecter_buffer_overflow(hex_raw):
                 menace = "Buffer Overflow (Padding)"
                 gravite = "CRITIQUE"
                 couleur = DANGER_CRITIQUE
-            
             elif "<script>" in payload_ascii or "alert(" in payload_ascii:
                 menace = "XSS (Injection de Script)"
                 gravite = "ÉLEVÉ"
@@ -77,12 +80,10 @@ def generer_expert_cyber(chemin_fichier):
                 menace = "Injection SQL"
                 gravite = "CRITIQUE"
                 couleur = DANGER_CRITIQUE
-            
             elif "../" in payload_ascii or "/etc/passwd" in payload_ascii:
                 menace = "Path Traversal (Accès Fichiers)"
                 gravite = "ÉLEVÉ"
                 couleur = DANGER_ELEVE
-            
             elif "http" in dst and flags == "S" and "5858" in hex_raw: 
                 menace = "HTTP Flood (DoS)"
                 gravite = "MOYEN"
@@ -98,34 +99,68 @@ def generer_expert_cyber(chemin_fichier):
 
             if menace:
                 alertes.append({
-                    "Date": datetime.now().strftime("%H:%M:%S"),
-                    "Source": src,
-                    "Cible": dst,
-                    "Menace": menace,
-                    "Gravité": gravite,
-                    "Détails": f"Paquet {length} bytes",
-                    "Couleur": couleur
+                    "Heure": timestamp,
+                    "Source": src, "Cible": dst, "Menace": menace,
+                    "Gravité": gravite, "Détails": f"Paquet {length} bytes", "Couleur": couleur
                 })
 
+    #CSV
     try:
         with open(chemin_csv, 'w', newline='', encoding='utf-8-sig') as csvfile:
-            fieldnames = ['Date', 'Source', 'Cible', 'Menace', 'Gravité', 'Détails']
+            fieldnames = ['Heure', 'Source', 'Cible', 'Menace', 'Gravité', 'Détails']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=';')
             writer.writeheader()
             for a in alertes:
                 writer.writerow({k: a[k] for k in fieldnames})
-        print(f"✅ Fichier CSV généré : {chemin_csv}")
+        print(f"Fichier CSV généré : {chemin_csv}")
     except Exception as e:
-        print(f"❌ Erreur CSV : {e}")
+        print(f" Erreur CSV : {e}")
 
+    #MARKDOWN
+    md_content = f"""
+# Rapport de Sécurité
+**Fichier :** `{os.path.basename(chemin_fichier)}`  
+**Date du rapport :** {datetime.now().strftime("%d/%m/%Y %H:%M")}
+
+---
+## Synthèse
+- **Total Alertes :** {len(alertes)}
+- **Critiques :** {len([a for a in alertes if a['Gravité'] == 'CRITIQUE'])}
+- **Élevées :** {len([a for a in alertes if a['Gravité'] == 'ÉLEVÉ'])}
+
+---
+## 🚨Journal des Menaces (Extrait)
+| Heure | Gravité | Menace | Source | Cible |
+| :--- | :--- | :--- | :--- | :--- |
+"""
+    for a in alertes[:50]:
+        icon = "🔴" if a['Gravité'] == "CRITIQUE" else "🟠" if a['Gravité'] == "ÉLEVÉ" else "🟡"
+        md_content += f"| `{a['Heure']}` | {icon} {a['Gravité']} | {a['Menace']} | `{a['Source']}` | `{a['Cible']}` |\n"
+    
+    with open(chemin_md, "w", encoding="utf-8") as f:
+        f.write(md_content)
+    print(f"✅ Fichier Markdown généré : {chemin_md}")
+
+    # Page web
     stats_menaces = Counter([a['Menace'] for a in alertes])
     
+    lignes_tableau = ""
+    for a in alertes[:20]:
+        lignes_tableau += f"""
+        <tr>
+            <td class="text-monospace">{a['Heure']}</td> <td><span class="badge" style="background-color:{a['Couleur']}">{a['Gravité']}</span></td>
+            <td>{a['Menace']}</td>
+            <td>{a['Source']}</td>
+            <td>{a['Cible']}</td>
+        </tr>
+        """
+
     html = f"""
     <!DOCTYPE html>
     <html lang="fr">
     <head>
         <meta charset="UTF-8">
-        <title>Cyber-Audit Dashboard</title>
+        <title>Analyse</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -136,8 +171,8 @@ def generer_expert_cyber(chemin_fichier):
             .card-header {{ background: transparent; border-bottom: 1px solid #334155; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }}
             .stat-value {{ font-size: 2.5rem; font-weight: bold; color: white; }}
             .table {{ color: #cbd5e1; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; }}
+            .text-monospace {{ font-family: 'JetBrains Mono', monospace; color: #94a3b8; }}
             .table-hover tbody tr:hover {{ background-color: #334155; color: white; }}
-            .badge-dot {{ height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }}
             @media print {{ 
                 body {{ background: white; color: black; }} 
                 .card {{ border: 1px solid #ccc; box-shadow: none; }}
@@ -148,10 +183,11 @@ def generer_expert_cyber(chemin_fichier):
     <body class="pb-5">
         <nav class="navbar navbar-expand-lg navbar-dark px-4 py-3 mb-4">
             <div class="container-fluid">
-                <a class="navbar-brand fw-bold text-info" href="#">🛡️ CYBER-AUDIT <span class="text-white">PRO</span></a>
+                <a class="navbar-brand fw-bold text-info" href="#">Analyse</a>
                 <div class="d-flex no-print">
-                    <button onclick="window.print()" class="btn btn-outline-light btn-sm me-2">🖨️ PDF</button>
-                    <a href="{os.path.basename(chemin_csv)}" class="btn btn-primary btn-sm">📊 Ouvrir CSV</a>
+                    <button onclick="window.print()" class="btn btn-outline-light btn-sm me-2">PDF</button>
+                    <a href="{os.path.basename(chemin_md)}" class="btn btn-outline-warning btn-sm me-2">Markdown</a>
+                    <a href="{os.path.basename(chemin_csv)}" class="btn btn-primary btn-sm">CSV</a>
                 </div>
             </div>
         </nav>
@@ -174,7 +210,7 @@ def generer_expert_cyber(chemin_fichier):
                 </div>
                 <div class="col-md-6">
                     <div class="card h-100 p-3 d-flex align-items-center justify-content-center">
-                        <h5 class="m-0 text-warning">⚠️ Fichier CSV généré : {os.path.basename(chemin_csv)}</h5>
+                        <h5 class="m-0 text-warning">Rapports générés : CSV & Markdown</h5>
                     </div>
                 </div>
             </div>
@@ -192,28 +228,21 @@ def generer_expert_cyber(chemin_fichier):
                 <div class="col-md-8">
                     <div class="card h-100">
                         <div class="card-header d-flex justify-content-between">
-                            <span>Flux en Temps Réel (Extrait)</span>
+                            <span>Flux en Temps Réel (Top 20)</span>
                             <span class="badge bg-secondary">{len(alertes)} événements</span>
                         </div>
                         <div class="table-responsive">
                             <table class="table table-hover align-middle mb-0">
                                 <thead class="table-dark">
                                     <tr>
-                                        <th>Gravité</th>
+                                        <th>Heure</th> <th>Gravité</th>
                                         <th>Menace</th>
                                         <th>Source</th>
                                         <th>Cible</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {"".join([f'''
-                                    <tr>
-                                        <td><span class="badge" style="background-color:{a['Couleur']}">{a['Gravité']}</span></td>
-                                        <td>{a['Menace']}</td>
-                                        <td>{a['Source']}</td>
-                                        <td>{a['Cible']}</td>
-                                    </tr>
-                                    ''' for a in alertes[:15]])}
+                                    {lignes_tableau}
                                 </tbody>
                             </table>
                         </div>
@@ -249,8 +278,8 @@ def generer_expert_cyber(chemin_fichier):
     with open(chemin_html, "w", encoding="utf-8") as f:
         f.write(html)
     
-    print("✅ Analyse terminée avec succès.")
+    print("✅Analyse terminée avec succès.")
     webbrowser.open('file://' + chemin_html)
 
-
+# Lancement
 generer_expert_cyber(r"C:\Users\Irmane\Documents\SAE1.05\DumpFile.txt")
